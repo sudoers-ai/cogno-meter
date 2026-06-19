@@ -18,6 +18,20 @@ def test_under_allowance_no_overage():
     assert bill.total == 20.0
 
 
+def test_compute_bill_debug_log(caplog):
+    """Pure function emits only DEBUG (no INFO/WARNING per call)."""
+    import logging
+    book = PriceBook.default()
+    records = [UsageRecord(Modality.LLM, "ollama:mistral", tokens_in=600_000, tokens_out=0)]
+    with caplog.at_level(logging.DEBUG, logger="cogno_meter.billing"):
+        meter(records, plan=BASIC, book=book)
+    debug = [r for r in caplog.records if "event=compute_bill" in r.message]
+    assert debug and debug[0].levelno == logging.DEBUG
+    assert "overage_tokens=100000" in debug[0].message
+    # never INFO/WARNING from a pure billing function
+    assert not [r for r in caplog.records if r.levelno >= logging.INFO]
+
+
 def test_example_1_local_model_exceeded():
     """Local LLM (1.2M tok) + Kokoro TTS (50k chars ×2 = 100k) = 1.3M billable.
     Overage 800k → R$0.04; provider cost 0 (local); total R$20.04."""

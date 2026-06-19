@@ -18,9 +18,14 @@ The lib ships a default seed (illustrative rates); a host injects its own via
 from __future__ import annotations
 
 import copy
+import logging
 from dataclasses import dataclass, field
 
 from cogno_meter.types import Modality, UsageRecord
+
+# Pure functions: no WARNING/INFO (the budget-block decision is the host's, and
+# the caller logs the returned Bill). DEBUG only — inspect the calculation.
+logger = logging.getLogger("cogno_meter.pricing")
 
 # Illustrative seed — values are examples (verify against providers; host overrides).
 # llm: USD per 1M tokens (input/output). embedding: USD per 1M tokens.
@@ -83,12 +88,15 @@ class PriceBook:
     @staticmethod
     def _resolve(table: dict, model: str):
         if model in table:
+            logger.debug("event=rate_resolve model=%s match=exact", model)
             return table[model]
         for key, rate in table.items():
             if key == "_default":
                 continue
             if model.startswith(key):  # 'gpt-4o-mini-2024-07-18' → 'openai:gpt-4o-mini'
+                logger.debug("event=rate_resolve model=%s match=fuzzy key=%s", model, key)
                 return rate
+        logger.debug("event=rate_resolve model=%s match=default", model)
         return table.get("_default")
 
     # ── provider cost (transparency), in USD ──────────────────────────
