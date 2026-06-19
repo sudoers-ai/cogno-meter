@@ -12,10 +12,15 @@ The provider cost (price book) is aggregated alongside, purely as transparency.
 
 from __future__ import annotations
 
+import logging
 from typing import Iterable
 
 from cogno_meter.pricing import PriceBook
 from cogno_meter.types import Bill, Plan, UsageRecord
+
+# Pure functions — DEBUG-only (the caller logs the returned Bill; the
+# budget-block decision belongs to the host). See LOGGING.md.
+logger = logging.getLogger("cogno_meter.billing")
 
 
 def total_billable_tokens(records: Iterable[UsageRecord], book: PriceBook) -> int:
@@ -37,6 +42,12 @@ def compute_bill(
     overage_tokens = max(0, billable_tokens - plan.monthly_token_limit)
     overage_cost = (overage_tokens / 1_000_000) * plan.overage_price
     total = plan.base_price + overage_cost
+    logger.debug(
+        "event=compute_bill total_tokens=%d allowance=%d overage_tokens=%d "
+        "overage_cost=%.6f total=%.6f provider_cost_usd=%.6f",
+        billable_tokens, plan.monthly_token_limit, overage_tokens,
+        overage_cost, total, provider_cost_usd,
+    )
     return Bill(
         total_tokens=billable_tokens,
         allowance=plan.monthly_token_limit,
