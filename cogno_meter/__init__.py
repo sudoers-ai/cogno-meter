@@ -26,6 +26,14 @@ from cogno_meter.billing import (
     total_billable_tokens,
     total_provider_cost_usd,
 )
+from cogno_meter.budget import (
+    BLOCKING_STATUSES,
+    WARN_THRESHOLD,
+    BudgetInputs,
+    BudgetReason,
+    BudgetVerdict,
+    evaluate_budget,
+)
 
 __all__ = [
     "Modality",
@@ -40,4 +48,10 @@ __all__ = [
     "compute_bill",
     "total_billable_tokens",
     "total_provider_cost_usd",
+    "evaluate_budget",
+    "BudgetInputs",
+    "BudgetVerdict",
+    "BudgetReason",
+    "BLOCKING_STATUSES",
+    "WARN_THRESHOLD",
 ]
