@@ -67,10 +67,6 @@ class BudgetVerdict:
     warnings: List[str] = field(default_factory=list)
 
 
-def _positive(v: Optional[float]) -> bool:
-    return v is not None and v > 0
-
-
 def evaluate_budget(inp: BudgetInputs) -> BudgetVerdict:
     """Apply the layered budget policy → a :class:`BudgetVerdict`. Currency/locale/time-agnostic."""
     warnings: List[str] = []
@@ -84,11 +80,11 @@ def evaluate_budget(inp: BudgetInputs) -> BudgetVerdict:
         (inp.tenant_daily_budget, inp.tenant_daily_spend, BudgetReason.TENANT_DAILY),
         (inp.identity_daily_budget, inp.identity_daily_spend, BudgetReason.IDENTITY_DAILY),
     ):
-        if not _positive(budget):
+        if budget is None or budget <= 0:   # unset → no limit (narrows budget to float below)
             continue
-        if spend >= budget:            # type: ignore[operator]  (guarded by _positive)
+        if spend >= budget:
             return _block(reason)
-        if spend >= budget * WARN_THRESHOLD:   # type: ignore[operator]
+        if spend >= budget * WARN_THRESHOLD:
             warnings.append(f"{reason.value}:80pct")
 
     # 3) subscription status / expiry (only when a subscription is present)
