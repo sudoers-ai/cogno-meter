@@ -84,17 +84,34 @@ class PriceBook:
             audio_multiplier=float(mapping.get("audio_multiplier", DEFAULT_AUDIO_MULTIPLIER)),
         )
 
-    # ── rate resolution (ported: exact → fuzzy prefix → _default) ──────
+    # ── rate resolution: exact → prefix-fuzzy → BARE (no 'provider:' prefix) → _default ──
+    #
+    # The ledger stores the backend's bare model name ('gpt-4o', 'qwen3:8b'), but the rate keys
+    # carry a 'provider:' prefix ('openai:gpt-4o'). So besides matching a prefixed model, also
+    # match a bare model against the key's model part (exact first so 'gpt-4o' doesn't greedily
+    # grab 'gpt-4o-mini', then longest-prefix fuzzy for versioned names like 'gpt-4o-mini-2024…').
+    @staticmethod
+    def _bare(key: str) -> str:
+        return key.split(":", 1)[1] if ":" in key else key
+
     @staticmethod
     def _resolve(table: dict, model: str):
         if model in table:
             logger.debug("event=rate_resolve model=%s match=exact", model)
             return table[model]
-        for key, rate in table.items():
-            if key == "_default":
-                continue
-            if model.startswith(key):  # 'gpt-4o-mini-2024-07-18' → 'openai:gpt-4o-mini'
+        items = [(k, r) for k, r in table.items() if k != "_default"]
+        for key, rate in items:                       # prefixed model vs prefixed key (versioned)
+            if model.startswith(key):
                 logger.debug("event=rate_resolve model=%s match=fuzzy key=%s", model, key)
+                return rate
+        for key, rate in items:                       # bare model == the key's model part
+            if model == PriceBook._bare(key):
+                logger.debug("event=rate_resolve model=%s match=bare key=%s", model, key)
+                return rate
+        for key, rate in sorted(items, key=lambda kv: len(PriceBook._bare(kv[0])), reverse=True):
+            bare = PriceBook._bare(key)               # bare versioned → longest bare prefix wins
+            if bare and model.startswith(bare):
+                logger.debug("event=rate_resolve model=%s match=bare_fuzzy key=%s", model, key)
                 return rate
         logger.debug("event=rate_resolve model=%s match=default", model)
         return table.get("_default")

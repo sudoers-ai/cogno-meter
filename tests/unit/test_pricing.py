@@ -89,3 +89,16 @@ def test_from_mapping_overrides_rates_and_multiplier():
     assert book.llm_cost_usd("x:y", 1_000_000, 1_000_000) == pytest.approx(3.0)
     rec = UsageRecord(modality=Modality.STT, model="local:w", chars=10)
     assert book.billable_tokens(rec) == 30
+
+
+def test_bare_model_name_resolves_to_prefixed_rate():
+    # the ledger stores the backend's bare name ('gpt-4o'), but rates are keyed 'openai:gpt-4o'
+    book = PriceBook.default()
+    assert book.llm_cost_usd("gpt-4o", 1_000_000, 1_000_000) == 2.50 + 10.00
+    assert book.llm_cost_usd("gpt-4o-mini", 1_000_000, 0) == 0.15
+    # bare + versioned → longest bare prefix wins (not the shorter 'gpt-4o')
+    assert book.llm_cost_usd("gpt-4o-mini-2024-07-18", 1_000_000, 0) == 0.15
+    # a bare local model has no rate → self-hosted 0 (correct, not a mismatch)
+    assert book.llm_cost_usd("qwen3:8b", 1_000_000, 1_000_000) == 0.0
+    # prefixed names still resolve (back-compat)
+    assert book.llm_cost_usd("openai:gpt-4o", 1_000_000, 0) == 2.50
