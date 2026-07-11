@@ -32,13 +32,44 @@ logger = logging.getLogger("cogno_meter.pricing")
 # stt: USD per minute of audio. tts: USD per 1M characters. _default: self-hosted = 0.
 DEFAULT_RATES: dict = {
     "llm": {
+        # exact keys for every catalogued model — the fuzzy resolver would otherwise let a
+        # bare "gpt-5-mini" greedily prefix-match "gpt-5"'s far pricier rate.
+        "openai:gpt-5-nano": {"input": 0.05, "output": 0.40},
         "openai:gpt-4.1-nano": {"input": 0.10, "output": 0.40},
         "openai:gpt-4o-mini": {"input": 0.15, "output": 0.60},
+        "openai:gpt-5.4-nano": {"input": 0.20, "output": 1.25},
+        "openai:gpt-5-mini": {"input": 0.25, "output": 2.00},
         "openai:gpt-4.1-mini": {"input": 0.40, "output": 1.60},
-        "openai:gpt-4o": {"input": 2.50, "output": 10.00},
+        "openai:gpt-5.4-mini": {"input": 0.75, "output": 4.50},
+        "openai:gpt-5.6-luna": {"input": 1.00, "output": 6.00},
+        "openai:gpt-5": {"input": 1.25, "output": 10.00},
         "openai:gpt-4.1": {"input": 2.00, "output": 8.00},
-        "anthropic:claude-haiku-4.5": {"input": 1.00, "output": 5.00},
-        "anthropic:claude-sonnet-4.5": {"input": 3.00, "output": 15.00},
+        "openai:gpt-5.6-terra": {"input": 2.50, "output": 15.00},
+        "openai:gpt-5.6-sol": {"input": 5.00, "output": 30.00},
+        "openai:gpt-5.5-pro": {"input": 30.00, "output": 180.00},
+        "openai:gpt-4o": {"input": 2.50, "output": 10.00},
+        # anthropic — real per-MTok rates (Opus 4.6=$5/$25, Sonnet 4.5=$3/$15, Haiku 4.5=$1/$5);
+        # the original Opus 4 keeps its launch $15/$75.
+        # Anthropic API IDs are hyphenated (claude-opus-4-6, not …4.6) — must match the id the
+        # backend reports into the ledger, or the rate resolves to _default (0).
+        "anthropic:claude-haiku-4-5": {"input": 1.00, "output": 5.00},
+        "anthropic:claude-sonnet-4-0": {"input": 3.00, "output": 15.00},
+        "anthropic:claude-sonnet-4-5": {"input": 3.00, "output": 15.00},
+        "anthropic:claude-opus-4-0": {"input": 15.00, "output": 75.00},
+        "anthropic:claude-opus-4-5": {"input": 5.00, "output": 25.00},
+        "anthropic:claude-opus-4-6": {"input": 5.00, "output": 25.00},
+        # gemini / grok — ILLUSTRATIVE seed (verify against the provider; host overrides).
+        "gemini:gemini-2.5-flash-lite": {"input": 0.10, "output": 0.40},
+        "gemini:gemini-2.5-flash": {"input": 0.30, "output": 2.50},
+        "gemini:gemini-3-flash": {"input": 0.50, "output": 3.00},
+        "gemini:gemini-2.5-pro": {"input": 1.25, "output": 10.00},
+        "gemini:gemini-3-pro": {"input": 2.00, "output": 12.00},
+        "gemini:gemini-3.1-pro": {"input": 2.50, "output": 15.00},
+        "grok:grok-3-mini": {"input": 0.30, "output": 0.50},
+        "grok:grok-3": {"input": 3.00, "output": 15.00},
+        "grok:grok-4": {"input": 3.00, "output": 15.00},
+        "grok:grok-4.1-fast": {"input": 0.20, "output": 0.50},
+        "grok:grok-4.20": {"input": 5.00, "output": 25.00},
         "ollama:_default": {"input": 0.0, "output": 0.0},  # self-hosted
         "_default": {"input": 0.0, "output": 0.0},
     },
