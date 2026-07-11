@@ -58,18 +58,21 @@ DEFAULT_RATES: dict = {
         "anthropic:claude-opus-4-0": {"input": 15.00, "output": 75.00},
         "anthropic:claude-opus-4-5": {"input": 5.00, "output": 25.00},
         "anthropic:claude-opus-4-6": {"input": 5.00, "output": 25.00},
-        # gemini / grok — ILLUSTRATIVE seed (verify against the provider; host overrides).
-        "gemini:gemini-2.5-flash-lite": {"input": 0.10, "output": 0.40},
-        "gemini:gemini-2.5-flash": {"input": 0.30, "output": 2.50},
-        "gemini:gemini-3-flash": {"input": 0.50, "output": 3.00},
-        "gemini:gemini-2.5-pro": {"input": 1.25, "output": 10.00},
-        "gemini:gemini-3-pro": {"input": 2.00, "output": 12.00},
-        "gemini:gemini-3.1-pro": {"input": 2.50, "output": 15.00},
-        "grok:grok-3-mini": {"input": 0.30, "output": 0.50},
-        "grok:grok-3": {"input": 3.00, "output": 15.00},
-        "grok:grok-4": {"input": 3.00, "output": 15.00},
-        "grok:grok-4.1-fast": {"input": 0.20, "output": 0.50},
-        "grok:grok-4.20": {"input": 5.00, "output": 25.00},
+        # gemini — 2.5 family verified vs ai.google.dev; 3.x preview partly estimated.
+        "gemini:gemini-2.5-flash-lite": {"input": 0.10, "output": 0.40},   # verified
+        "gemini:gemini-2.5-flash": {"input": 0.30, "output": 2.50},        # verified
+        "gemini:gemini-3-flash": {"input": 0.50, "output": 3.00},          # input verified, output est.
+        "gemini:gemini-2.5-pro": {"input": 1.25, "output": 10.00},         # verified (≤200k prompt)
+        "gemini:gemini-3-pro": {"input": 2.00, "output": 12.00},           # est. (aligned to 3.1-pro)
+        "gemini:gemini-3.1-pro": {"input": 2.00, "output": 12.00},         # verified (3.1 Pro Preview)
+        # grok — verified vs xAI pricing; grok-3-mini estimated. (grok-4.20 was fictional →
+        # dropped; real flagship is grok-4.5.)
+        "grok:grok-3-mini": {"input": 0.30, "output": 0.50},               # est.
+        "grok:grok-3": {"input": 2.00, "output": 10.00},                   # verified (legacy)
+        "grok:grok-4": {"input": 3.00, "output": 15.00},                   # verified
+        "grok:grok-4.1-fast": {"input": 0.20, "output": 0.50},             # verified
+        "grok:grok-4.3": {"input": 1.25, "output": 2.50},                  # verified
+        "grok:grok-4.5": {"input": 2.00, "output": 6.00},                  # verified (flagship)
         "ollama:_default": {"input": 0.0, "output": 0.0},  # self-hosted
         "_default": {"input": 0.0, "output": 0.0},
     },
