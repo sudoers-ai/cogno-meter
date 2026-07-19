@@ -134,7 +134,12 @@ class PriceBook:
             logger.debug("event=rate_resolve model=%s match=exact", model)
             return table[model]
         items = [(k, r) for k, r in table.items() if k != "_default"]
-        for key, rate in items:                       # prefixed model vs prefixed key (versioned)
+        # Longest-key-first so a short key that string-prefixes a longer one (``gpt-5`` vs
+        # ``gpt-5.5-pro``) never steals the more specific model's rate. All fuzzy passes below
+        # must be longest-first; step 2 used to iterate in dict-insertion order and mispriced
+        # dated builds of flagship models (~19x under-report on the cost-transparency figure).
+        prefix_items = sorted(items, key=lambda kv: len(kv[0]), reverse=True)
+        for key, rate in prefix_items:                # prefixed model vs prefixed key (versioned)
             if model.startswith(key):
                 logger.debug("event=rate_resolve model=%s match=fuzzy key=%s", model, key)
                 return rate
@@ -147,6 +152,13 @@ class PriceBook:
             if bare and model.startswith(bare):
                 logger.debug("event=rate_resolve model=%s match=bare_fuzzy key=%s", model, key)
                 return rate
+        # Per-provider catch-all (``openai:_default``) before the global one, so a host can set a
+        # non-zero default per provider instead of every un-catalogued model silently costing 0.
+        if ":" in model:
+            provider_default = table.get(f"{model.split(':', 1)[0]}:_default")
+            if provider_default is not None:
+                logger.debug("event=rate_resolve model=%s match=provider_default", model)
+                return provider_default
         logger.debug("event=rate_resolve model=%s match=default", model)
         return table.get("_default")
 
@@ -172,9 +184,9 @@ class PriceBook:
 
     def usage_cost_usd(self, rec: UsageRecord) -> float:
         if rec.modality == Modality.LLM:
-            return self.llm_cost_usd(rec.model, rec.tokens_in, rec.tokens_out)
+            return self.llm_cost_usd(rec.model, int(rec.tokens_in or 0), int(rec.tokens_out or 0))
         if rec.modality == Modality.EMBEDDING:
-            return self.embedding_cost_usd(rec.model, rec.tokens_in or rec.tokens_out)
+            return self.embedding_cost_usd(rec.model, int(rec.tokens_in or 0) or int(rec.tokens_out or 0))
         if rec.modality == Modality.STT:
             return self.stt_cost_usd(rec.model, rec.minutes)
         if rec.modality == Modality.TTS:
@@ -184,8 +196,16 @@ class PriceBook:
     # ── billable tokens (toward the allowance/overage) ────────────────
     def billable_tokens(self, rec: UsageRecord) -> int:
         """Tokens that count toward the monthly allowance. LLM/embedding use the
-        token counts directly; audio is metered by chars × ``audio_multiplier``."""
-        if rec.modality in (Modality.LLM, Modality.EMBEDDING):
-            return rec.tokens_in + rec.tokens_out
+        token counts directly; audio is metered by chars × ``audio_multiplier``.
+
+        Token fields are coerced (``None``/missing → 0): one malformed ledger record must not
+        raise ``TypeError`` and abort billing for the whole period."""
+        tin, tout = int(rec.tokens_in or 0), int(rec.tokens_out or 0)
+        if rec.modality == Modality.LLM:
+            return tin + tout
+        # Embedding: mirror the cost path (``tokens_in or tokens_out``) so billable tokens and
+        # the priced amount interpret the same record identically — embeddings carry input only.
+        if rec.modality == Modality.EMBEDDING:
+            return tin or tout
         # STT / TTS — always char-metered, scaled up by the audio multiplier.
-        return int(round(rec.chars * self.audio_multiplier))
+        return int(round((rec.chars or 0) * self.audio_multiplier))
