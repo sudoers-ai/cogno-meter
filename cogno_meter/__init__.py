@@ -13,6 +13,15 @@ book values, the accumulated-usage persistence, and invoicing. Adapted from the
 parent cogno's pricing/metering/billing.
 """
 
+from importlib.metadata import PackageNotFoundError
+from importlib.metadata import version as _dist_version
+
+try:
+    __version__ = _dist_version("cogno-meter")
+except PackageNotFoundError:  # source tree without an installed dist (e.g. vendored checkout)
+    __version__ = "0.0.0"
+
+
 from cogno_meter.types import Bill, Modality, Plan, UsageRecord
 from cogno_meter.pricing import (
     DEFAULT_AUDIO_MULTIPLIER,
