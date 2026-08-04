@@ -30,6 +30,27 @@ def test_unknown_model_falls_to_global_default_zero():
     assert book.llm_cost_usd("madeup:model", 1_000_000, 1_000_000) == 0.0
 
 
+def test_retired_grok_slugs_are_priced_as_what_xai_actually_serves():
+    """A retired xAI slug is REDIRECTED to grok-4.3 and billed at grok-4.3 rates, so the meter
+    must charge 4.3 for it — and the key must stay in the book. Dropping it does not fail loudly:
+    'grok:grok-4' prefix-matches nothing ('grok-4' is not a prefix of 'grok-4.3'), so it would
+    resolve to _default = 0 and report paid traffic as free."""
+    book = PriceBook.default()
+    live = book.llm_cost_usd("grok:grok-4.3", 1_000_000, 1_000_000)
+    for retired in ("grok:grok-3", "grok:grok-3-mini", "grok:grok-4", "grok:grok-4.1-fast"):
+        assert book.llm_cost_usd(retired, 1_000_000, 1_000_000) == pytest.approx(live)
+    assert live == pytest.approx(1.25 + 2.50)
+    # the flagship is NOT collapsed into that rate
+    assert book.llm_cost_usd("grok:grok-4.5", 1_000_000, 1_000_000) == pytest.approx(2.00 + 6.00)
+
+
+def test_grok_420_snapshot_variants_resolve_by_prefix():
+    book = PriceBook.default()
+    for variant in ("grok:grok-4.20-0309-reasoning", "grok:grok-4.20-0309-non-reasoning",
+                    "grok:grok-4.20-multi-agent-0309"):
+        assert book.llm_cost_usd(variant, 1_000_000, 0) == pytest.approx(1.25)
+
+
 def test_tts_cost_per_million_chars():
     book = PriceBook.default()
     # openai:tts-1 = 15.00 USD / 1M chars

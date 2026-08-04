@@ -65,14 +65,26 @@ DEFAULT_RATES: dict = {
         "gemini:gemini-2.5-pro": {"input": 1.25, "output": 10.00},         # verified (≤200k prompt)
         "gemini:gemini-3-pro": {"input": 2.00, "output": 12.00},           # est. (aligned to 3.1-pro)
         "gemini:gemini-3.1-pro": {"input": 2.00, "output": 12.00},         # verified (3.1 Pro Preview)
-        # grok — verified vs xAI pricing; grok-3-mini estimated. (grok-4.20 was fictional →
-        # dropped; real flagship is grok-4.5.)
-        "grok:grok-3-mini": {"input": 0.30, "output": 0.50},               # est.
-        "grok:grok-3": {"input": 2.00, "output": 10.00},                   # verified (legacy)
-        "grok:grok-4": {"input": 3.00, "output": 15.00},                   # verified
-        "grok:grok-4.1-fast": {"input": 0.20, "output": 0.50},             # verified
-        "grok:grok-4.3": {"input": 1.25, "output": 2.50},                  # verified
-        "grok:grok-4.5": {"input": 2.00, "output": 6.00},                  # verified (flagship)
+        # grok — verified vs docs.x.ai 2026-08-04. Two corrections to the previous seed:
+        #
+        # (1) grok-4.20 is NOT fictional (an earlier comment here said so). Three real snapshot
+        #     variants ship, all at the 4.3 rate; one prefix key covers them.
+        # (2) The retired ids are KEPT, repriced. xAI's 2026-05-15 retirement took grok-3,
+        #     grok-4-0709 and the grok-4-1-fast pair, and a request to a retired slug is
+        #     REDIRECTED to grok-4.3 and BILLED AT GROK-4.3 RATES. So the old rates here were
+        #     over-reporting real spend by up to 6x — and DELETING the keys would be worse than
+        #     leaving them wrong: 'grok:grok-4' matches no surviving key (not even by bare
+        #     prefix — 'grok-4' does not start with 'grok-4.3'), so it would fall through to
+        #     _default = 0 and report paid traffic as FREE. A meter must charge what the
+        #     provider charges, including for a slug the provider silently reroutes.
+        "grok:grok-3-mini": {"input": 1.25, "output": 2.50},   # retired → served/billed as 4.3
+        "grok:grok-3": {"input": 1.25, "output": 2.50},        # retired → served/billed as 4.3
+        "grok:grok-4": {"input": 1.25, "output": 2.50},        # retired → served/billed as 4.3
+        "grok:grok-4.1-fast": {"input": 1.25, "output": 2.50},  # retired → served/billed as 4.3
+        "grok:grok-build-0.1": {"input": 1.00, "output": 2.00},  # verified (coding)
+        "grok:grok-4.20": {"input": 1.25, "output": 2.50},     # verified (all -0309-* variants)
+        "grok:grok-4.3": {"input": 1.25, "output": 2.50},      # verified
+        "grok:grok-4.5": {"input": 2.00, "output": 6.00},      # verified (flagship)
         "ollama:_default": {"input": 0.0, "output": 0.0},  # self-hosted
         "_default": {"input": 0.0, "output": 0.0},
     },
