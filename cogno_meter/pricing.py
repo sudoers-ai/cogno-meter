@@ -29,6 +29,20 @@ logger = logging.getLogger("cogno_meter.pricing")
 
 # Illustrative seed — values are examples (verify against providers; host overrides).
 # llm: USD per 1M tokens (input/output). embedding: USD per 1M tokens.
+# Providers whose traffic is BILLED by someone. The floor below only applies to these, and the
+# reason is a colon: an Ollama model is natively named ``model:tag`` (``qwen3:8b``,
+# ``mistral:latest``), so "has a colon" cannot mean "has a provider". Treating it that way
+# started charging for models running on the user's own hardware — caught by the existing
+# `test_bare_model_name_resolves_to_prefixed_rate`, which pins qwen3:8b at 0.
+#
+# Kept in step with the backends cogno-synapse ships (its factory's named providers plus the
+# _OPENAI_COMPATIBLE registry). A name not on this list resolves as before: unknown scheme,
+# global default, zero.
+_CLOUD_PROVIDERS = frozenset({
+    "openai", "anthropic", "gemini", "grok", "groq", "bedrock",
+    "deepseek", "moonshot", "xai", "openrouter", "together", "fireworks",
+})
+
 # stt: USD per minute of audio. tts: USD per 1M characters. _default: self-hosted = 0.
 DEFAULT_RATES: dict = {
     "llm": {
@@ -166,13 +180,74 @@ class PriceBook:
                 return rate
         # Per-provider catch-all (``openai:_default``) before the global one, so a host can set a
         # non-zero default per provider instead of every un-catalogued model silently costing 0.
-        if ":" in model:
-            provider_default = table.get(f"{model.split(':', 1)[0]}:_default")
+        if ":" in model and model.split(":", 1)[0] in _CLOUD_PROVIDERS:
+            provider = model.split(":", 1)[0]
+            provider_default = table.get(f"{provider}:_default")
             if provider_default is not None:
                 logger.debug("event=rate_resolve model=%s match=provider_default", model)
                 return provider_default
+            # NOTHING declared for this provider, and it is not self-hosted (those carry an
+            # explicit ``ollama:_default = 0``). Falling through to the global ``_default``
+            # would price the call at ZERO — the exact failure the grok comment above calls
+            # out ("report paid traffic as FREE"), except it is not specific to xAI: measured
+            # 2026-08-05, an unknown model on EVERY cloud provider metered free. A provider
+            # ships a model, a tenant pins it, and the bill is 0 until someone remembers.
+            #
+            # The floor is the provider's own CHEAPEST catalogued rate, derived from the table
+            # rather than guessed, so it stays right as the table changes. Cheapest and not
+            # flagship on purpose: this feeds BudgetGuard as well as billing, and the smallest
+            # non-zero number cannot wrongly block a tenant. It under-reports a premium model —
+            # that is a known, bounded error, and the WARNING is what gets it fixed. Silence
+            # was the unbounded one.
+            floor = PriceBook._provider_floor(table, provider)
+            if floor is not None:
+                logger.warning(
+                    "event=rate_uncatalogued model=%s provider=%s using_floor=%s — add this "
+                    "model to the price book; it is being metered at the provider's cheapest "
+                    "known rate, not its real one", model, provider, floor)
+                return floor
+            # The provider has NO rates at all. Measured 2026-08-05: cogno-synapse ships
+            # backends for groq, deepseek, moonshot, xai, openrouter, together and fireworks,
+            # and this book prices only openai/anthropic/gemini/grok/ollama — so a tenant on
+            # any of the others meters ENTIRELY free, not just on one unknown model.
+            #
+            # That is a DATA gap (someone must supply real rates) and this cannot invent them.
+            # What it can do is refuse to call paid traffic free: fall back to the cheapest
+            # CLOUD rate in the whole book — still derived, still the smallest non-zero number,
+            # so it cannot wrongly trip a budget — and say so at WARNING with the provider
+            # named, which is what gets the rates added.
+            cheapest_cloud = PriceBook._cheapest_cloud(table)
+            if cheapest_cloud is not None:
+                logger.warning(
+                    "event=rate_provider_uncatalogued model=%s provider=%s using_floor=%s — "
+                    "this provider has NO rates in the price book; its traffic would otherwise "
+                    "meter as FREE. Add %s rates.", model, provider, cheapest_cloud, provider)
+                return cheapest_cloud
         logger.debug("event=rate_resolve model=%s match=default", model)
         return table.get("_default")
+
+    @staticmethod
+    def _cheapest_cloud(table: dict):
+        """The cheapest non-zero rate in the book — the floor for a provider with no rates."""
+        priced = [r for k, r in table.items()
+                  if isinstance(r, dict) and not k.endswith("_default")
+                  and (r.get("output", 0.0) or 0.0) > 0.0]
+        if not priced:
+            return None
+        return min(priced, key=lambda r: (r.get("output", 0.0), r.get("input", 0.0)))
+
+    @staticmethod
+    def _provider_floor(table: dict, provider: str):
+        """The provider's cheapest catalogued rate, or None when it has no entries at all."""
+        rates = [r for k, r in table.items()
+                 if k.startswith(f"{provider}:") and not k.endswith(":_default")]
+        if not rates:
+            return None
+        # Embedding tables hold bare floats; LLM tables hold {input, output} dicts.
+        if all(isinstance(r, (int, float)) for r in rates):
+            return min(rates)
+        priced = [r for r in rates if isinstance(r, dict)]
+        return min(priced, key=lambda r: (r.get("output", 0.0), r.get("input", 0.0))) or None
 
     # ── provider cost (transparency), in USD ──────────────────────────
     def llm_cost_usd(self, model: str, tokens_in: int, tokens_out: int) -> float:

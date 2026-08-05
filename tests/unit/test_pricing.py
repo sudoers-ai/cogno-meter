@@ -161,3 +161,62 @@ def test_embedding_billable_matches_cost_path():
     rec = UsageRecord(modality=Modality.EMBEDDING, model="openai:text-embedding-3-small",
                       tokens_in=1_000_000, tokens_out=1_000_000)
     assert book.billable_tokens(rec) == 1_000_000    # tokens_in or tokens_out (mirrors cost)
+
+
+# ── an uncatalogued cloud model must never meter as free ──────────────────────────────────
+
+@pytest.mark.parametrize("model", [
+    "openai:gpt-9-turbo", "anthropic:claude-opus-9", "gemini:gemini-9-pro",
+    "grok:grok-9", "groq:llama-9-70b", "deepseek:deepseek-v9",
+])  # groq/deepseek have NO rates at all — cogno-synapse ships backends for both
+def test_an_uncatalogued_cloud_model_is_not_free(model):
+    """Measured 2026-08-05: every cloud provider priced an unknown model at 0.00.
+
+    The grok block in the price book already names this failure — "a request to a retired
+    slug ... would fall through to _default = 0 and report paid traffic as FREE" — and keeps
+    dead keys around to avoid it. It is not specific to xAI: any provider shipping a model
+    nobody has catalogued yet bills nothing until someone remembers to add it. A meter that
+    reports zero for paid traffic is worse than one that reports approximately.
+    """
+    book = PriceBook.default()
+    rate = book._resolve(book.rates["llm"], model)
+    assert rate is not None and rate["output"] > 0.0, f"{model} metered free"
+
+
+def test_the_floor_is_the_providers_own_cheapest_rate():
+    """Derived from the table, never guessed, so it stays right as the table changes. Cheapest
+    and not flagship on purpose: this feeds BudgetGuard as well as billing, and the smallest
+    non-zero number cannot wrongly block a tenant."""
+    book = PriceBook.default()
+    llm = book.rates["llm"]
+    openai_rates = [r for k, r in llm.items()
+                    if k.startswith("openai:") and not k.endswith(":_default")]
+    cheapest = min(openai_rates, key=lambda r: (r["output"], r["input"]))
+    assert book._resolve(llm, "openai:gpt-9-turbo") == cheapest
+
+
+def test_a_local_model_with_a_TAG_is_still_free():
+    """An Ollama model is natively named model:tag — qwen3:8b, mistral:latest. "Has a
+    colon" therefore cannot mean "has a provider", and a first version of the floor read it
+    that way and started CHARGING for models on the user's own hardware. The existing
+    test_bare_model_name_resolves_to_prefixed_rate caught it; this pins it directly."""
+    book = PriceBook.default()
+    for local in ("qwen3:8b", "mistral:latest", "nomic-embed-text:latest"):
+        assert book.llm_cost_usd(local, 1_000_000, 1_000_000) == 0.0, local
+
+
+def test_an_unknown_scheme_is_not_charged():
+    """Only a KNOWN cloud provider gets the floor; anything else resolves as before."""
+    assert PriceBook.default().llm_cost_usd("madeup:model", 1_000_000, 1_000_000) == 0.0
+
+
+def test_self_hosted_stays_free():
+    """Contraprova: ollama carries an explicit ``ollama:_default = 0`` and keeps it — the floor
+    must never start charging for a model running on the user's own hardware."""
+    book = PriceBook.default()
+    assert book._resolve(book.rates["llm"], "ollama:anything-at-all")["output"] == 0.0
+
+
+def test_a_catalogued_model_is_unaffected():
+    book = PriceBook.default()
+    assert book._resolve(book.rates["llm"], "openai:gpt-4o-mini")["output"] == 0.6
