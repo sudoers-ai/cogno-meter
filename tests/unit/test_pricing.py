@@ -222,15 +222,22 @@ def test_a_catalogued_model_is_unaffected():
     assert book._resolve(book.rates["llm"], "openai:gpt-4o-mini")["output"] == 0.6
 
 
-def test_every_tts_model_a_host_can_offer_has_a_stated_rate():
+def test_every_tts_model_a_host_can_offer_has_a_stated_NON_ZERO_rate():
     """An uncatalogued model does not fail — it lands on the cheapest known floor and logs
     `rate_uncatalogued` on EVERY call. Same number, unstated, plus a warning per message.
 
-    This does not check the number is right (`gpt-4o-mini-tts` is token-billed while this book
-    is per character, and its entry says so). It checks the number is DECLARED, which is what
-    makes it reviewable at all."""
+    **Presence alone is not the assertion**, and a review measured why: with only a key check,
+    `15.00 → 0.0` passed 57/57 — metering paid traffic as free, which is precisely the
+    regression PR #13 exists to prevent. The rate has to be positive.
+
+    It still does not check the number is RIGHT (`gpt-4o-mini-tts` is billed by audio-output
+    token while this book is per character, and its entry says so). It checks the number is
+    DECLARED and not zero, which is what makes it reviewable at all."""
     from cogno_meter.pricing import DEFAULT_RATES
 
     offered = {"openai:tts-1", "openai:tts-1-hd", "openai:gpt-4o-mini-tts"}
-    missing = offered - set(DEFAULT_RATES["tts"])
+    rates = DEFAULT_RATES["tts"]
+    missing = offered - set(rates)
     assert not missing, f"tts models with no stated rate: {sorted(missing)}"
+    free = {m for m in offered if not rates[m] > 0}
+    assert not free, f"paid cloud tts metered as FREE: {sorted(free)}"

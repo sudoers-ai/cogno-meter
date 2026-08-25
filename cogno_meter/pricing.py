@@ -121,9 +121,14 @@ DEFAULT_RATES: dict = {
         # the alternative is worse: without an entry every voiced turn on it logs
         # `rate_uncatalogued` and it silently lands on the same 15.00 floor — same number,
         # unstated, plus a warning per message. Stating the choice makes it reviewable.
-        # OpenAI positions it BELOW `tts-1`, so this most likely over-states the cost, which is
-        # the safe direction for the platform and the wrong one for the tenant: confirm against
-        # a real invoice before anyone leans on it.
+        # The DIRECTION of the error is not stated, because the first version stated it wrong.
+        # It said "most likely over-states, the safe direction for the platform" — from the
+        # headline that this model is cheaper than `tts-1`. Worked the right way for a TTS
+        # model, the billable volume is AUDIO-OUTPUT tokens rather than input characters, and a
+        # review put the true rate near $17/1M chars for English (≈$14.5–20 across 130–180 wpm):
+        # it BRACKETS $15 and centres above it, so this most likely UNDER-reports — which is the
+        # failure this file's own doctrine ("refuse to call paid traffic free") exists to
+        # prevent. Confirm against a real invoice before anyone leans on it.
         "openai:gpt-4o-mini-tts": 15.00,
         "xai:grok-2-tts": 4.20,
         "_default": 0.0,  # self-hosted Kokoro
