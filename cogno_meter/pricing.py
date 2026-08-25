@@ -115,6 +115,21 @@ DEFAULT_RATES: dict = {
     "tts": {  # USD per 1M characters
         "openai:tts-1": 15.00,
         "openai:tts-1-hd": 30.00,
+        # Carried at the `tts-1` rate DELIBERATELY, and it is a placeholder, not a measurement:
+        # this model is billed by TOKEN (text in + audio out) while this book is per CHARACTER,
+        # and the conversion depends on the voice and the language. It is listed anyway because
+        # the alternative is worse: without an entry every voiced turn on it logs
+        # `rate_uncatalogued` and it silently lands on the same 15.00 floor — same number,
+        # unstated, plus a warning per message. Stating the choice makes it reviewable.
+        # The DIRECTION of the error is not stated, because the first version stated it wrong.
+        # It said "most likely over-states, the safe direction for the platform" — from the
+        # headline that this model is cheaper than `tts-1`. Worked the right way for a TTS
+        # model, the billable volume is AUDIO-OUTPUT tokens rather than input characters, and a
+        # review put the true rate near $17/1M chars for English (≈$14.5–20 across 130–180 wpm):
+        # it BRACKETS $15 and centres above it, so this most likely UNDER-reports — which is the
+        # failure this file's own doctrine ("refuse to call paid traffic free") exists to
+        # prevent. Confirm against a real invoice before anyone leans on it.
+        "openai:gpt-4o-mini-tts": 15.00,
         "xai:grok-2-tts": 4.20,
         "_default": 0.0,  # self-hosted Kokoro
     },
