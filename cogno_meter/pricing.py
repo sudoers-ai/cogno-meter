@@ -310,4 +310,6 @@ class PriceBook:
         if rec.modality == Modality.EMBEDDING:
             return tin or tout
         # STT / TTS — always char-metered, scaled up by the audio multiplier.
-        return int(round((rec.chars or 0) * self.audio_multiplier))
+        if rec.modality in (Modality.STT, Modality.TTS):
+            return int(round((rec.chars or 0) * self.audio_multiplier))
+        return 0
