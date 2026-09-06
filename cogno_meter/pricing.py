@@ -67,9 +67,12 @@ _CLOUD_PROVIDERS = frozenset({
 # them. Adding them properly means adding their dimensions, not a number.
 #
 # Not seeded either: every model whose cached rate is not published in a form we have verified —
-# including ``gpt-5.6-luna``, which is 78% of this deployment's real spend (measured 2026-09-06
-# over ``token_ledger``: $18.13 of $23.19). It is charged FULL price and says so, loudly and
-# once per model, because a warning naming the biggest line is what gets the rate added.
+# including ``gpt-5.6-luna``, which is ~78% of one deployment's whole reported provider spend.
+# Measured over its ``token_ledger`` twice on 2026-09-06, hours apart: $18.13 of $23.19 (78.2%)
+# and $20.15 of $25.98 (77.5%). The SHARE is the durable figure; the totals are a growing table
+# and were already stale between the two readings, which is why they are quoted as a pair.
+# It is charged FULL price and says so, loudly and once per model, because a warning naming the
+# biggest line is what gets the rate added.
 # stt: USD per minute of audio. tts: USD per 1M characters. _default: self-hosted = 0.
 DEFAULT_RATES: dict = {
     "llm": {
