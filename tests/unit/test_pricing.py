@@ -241,3 +241,117 @@ def test_every_tts_model_a_host_can_offer_has_a_stated_NON_ZERO_rate():
     assert not missing, f"tts models with no stated rate: {sorted(missing)}"
     free = {m for m in offered if not rates[m] > 0}
     assert not free, f"paid cloud tts metered as FREE: {sorted(free)}"
+
+
+# ── the provider's prompt cache (``UsageRecord.cached_tokens``) ────────────────────────────
+#
+# Measured live 2026-09-03: a second call with the same prefix reported 2432 cached of 2625
+# prompt tokens (92.6%). The field existed in the provider payload and was read NOWHERE, so
+# every EGO correction retry — 40.2% of the month's tokens — was priced as if the prompt were
+# fresh. These pin the three outcomes and the one thing that must NOT move.
+
+def test_a_cached_prompt_is_priced_at_the_models_cached_rate_not_the_input_rate():
+    """The discount is the TABLE's, to the token — not a percentage this code invents."""
+    book = PriceBook.default()
+    # gpt-4o-mini: input 0.15, cached_input 0.075, output 0.60 (USD/1M)
+    cost = book.llm_cost_usd("openai:gpt-4o-mini", 1_000_000, 100_000, cached_tokens=800_000)
+    expected = (200_000 / 1e6) * 0.15 + (800_000 / 1e6) * 0.075 + (100_000 / 1e6) * 0.60
+    assert cost == pytest.approx(expected)
+    # …and it is strictly cheaper than pricing the same call as all-fresh.
+    assert cost < book.llm_cost_usd("openai:gpt-4o-mini", 1_000_000, 100_000)
+
+
+def test_the_live_measurement_prices_lower_by_exactly_the_table():
+    """The turn that was actually measured: 2432 cached of 2625 prompt tokens."""
+    book = PriceBook.default()
+    rec = UsageRecord(Modality.LLM, "openai:gpt-4o-mini",
+                      tokens_in=2625, tokens_out=100, cached_tokens=2432)
+    expected = (193 / 1e6) * 0.15 + (2432 / 1e6) * 0.075 + (100 / 1e6) * 0.60
+    assert book.usage_cost_usd(rec) == pytest.approx(expected)
+
+
+@pytest.mark.parametrize("model", sorted(
+    k for k in PriceBook.default().rates["llm"] if not k.endswith("_default")))
+def test_a_record_with_no_cached_tokens_prices_exactly_as_before(model):
+    """The BYTE-IDENTICAL twin, over every catalogued model: with the field absent (0), the
+    result is the pre-change formula — ``tokens_in × input + tokens_out × output`` — and the
+    ``cached_input`` column changes nothing at all."""
+    book = PriceBook.default()
+    rates = book.rates["llm"][model]
+    legacy = (1_000_000 / 1e6) * rates["input"] + (250_000 / 1e6) * rates["output"]
+    assert book.llm_cost_usd(model, 1_000_000, 250_000) == pytest.approx(legacy)
+    assert book.usage_cost_usd(
+        UsageRecord(Modality.LLM, model, tokens_in=1_000_000, tokens_out=250_000)
+    ) == pytest.approx(legacy)
+
+
+def test_a_model_with_no_cache_rate_is_charged_the_full_input_rate(caplog):
+    """gpt-5.6-luna is 78% of this deployment's real spend and its cached rate is not
+    published in a form the book carries. NEVER guess a discount: full price, and say so."""
+    book = PriceBook.default()
+    assert "cached_input" not in book.rates["llm"]["openai:gpt-5.6-luna"]
+    full = book.llm_cost_usd("openai:gpt-5.6-luna", 1_000_000, 0)
+    with caplog.at_level("WARNING", logger="cogno_meter.pricing"):
+        cached = book.llm_cost_usd("openai:gpt-5.6-luna", 1_000_000, 0, cached_tokens=900_000)
+    assert cached == pytest.approx(full)
+    assert "cache_rate_uncatalogued" in caplog.text
+    assert "openai:gpt-5.6-luna" in caplog.text
+
+
+def test_the_missing_rate_is_declared_once_per_model_not_once_per_call(caplog):
+    """A per-call line on a model that runs every turn is a line nobody reads."""
+    book = PriceBook.default()
+    with caplog.at_level("WARNING", logger="cogno_meter.pricing"):
+        for _ in range(5):
+            book.llm_cost_usd("openai:gpt-5.6-luna", 1_000, 0, cached_tokens=900)
+        book.llm_cost_usd("openai:gpt-5.5-pro", 1_000, 0, cached_tokens=900)
+    lines = [r for r in caplog.records if "cache_rate_uncatalogued" in r.getMessage()]
+    assert len(lines) == 2
+    # …and a FRESH book counts again (the dedup is per instance, so tests do not infect
+    # each other and a long-lived process is not silenced by a short-lived one).
+    with caplog.at_level("WARNING", logger="cogno_meter.pricing"):
+        caplog.clear()
+        PriceBook.default().llm_cost_usd("openai:gpt-5.6-luna", 1_000, 0, cached_tokens=900)
+    assert "cache_rate_uncatalogued" in caplog.text
+
+
+def test_the_cache_discount_does_not_touch_the_allowance():
+    """The plan is a contract in TOKENS. What the provider cached is our saving, not the
+    customer's: subtracting it here would silently rewrite every published plan."""
+    book = PriceBook.default()
+    plain = UsageRecord(Modality.LLM, "openai:gpt-4o-mini", tokens_in=2625, tokens_out=100)
+    cached = UsageRecord(Modality.LLM, "openai:gpt-4o-mini", tokens_in=2625, tokens_out=100,
+                         cached_tokens=2432)
+    assert book.billable_tokens(cached) == book.billable_tokens(plain) == 2725
+    # …while the cost DID move, so the test is not passing by the field being inert.
+    assert book.usage_cost_usd(cached) < book.usage_cost_usd(plain)
+
+
+def test_more_cached_than_prompt_tokens_never_produces_a_credit():
+    """A provider payload that over-reports cached tokens must not make the fresh count
+    negative — that would be a refund on our own bill."""
+    book = PriceBook.default()
+    cost = book.llm_cost_usd("openai:gpt-4o-mini", 1_000, 0, cached_tokens=9_999)
+    assert cost == pytest.approx((1_000 / 1e6) * 0.075)
+    assert book.llm_cost_usd("openai:gpt-4o-mini", 1_000, 0, cached_tokens=-5) == \
+        pytest.approx((1_000 / 1e6) * 0.15)
+
+
+def test_a_host_supplied_book_can_carry_its_own_cache_rates():
+    """``from_mapping`` is how a deployment overrides the seed — the new column must survive
+    it, or the feature only ever works for the shipped table."""
+    book = PriceBook.from_mapping({
+        "llm": {"acme:model": {"input": 10.0, "output": 20.0, "cached_input": 1.0}},
+        "embedding": {"_default": 0.0}, "stt": {"_default": 0.0}, "tts": {"_default": 0.0},
+    })
+    assert book.llm_cost_usd("acme:model", 1_000_000, 0, cached_tokens=900_000) == \
+        pytest.approx((100_000 / 1e6) * 10.0 + (900_000 / 1e6) * 1.0)
+
+
+def test_every_seeded_cache_rate_is_cheaper_than_the_models_own_input_rate():
+    """A ``cached_input`` at or above ``input`` is a typo that would OVER-charge; a negative
+    one is a credit. Cheap, and it guards the whole column as the table grows."""
+    for model, rates in PriceBook.default().rates["llm"].items():
+        if not isinstance(rates, dict) or "cached_input" not in rates:
+            continue
+        assert 0.0 < rates["cached_input"] < rates["input"], model

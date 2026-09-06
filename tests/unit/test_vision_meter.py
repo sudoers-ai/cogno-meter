@@ -1,6 +1,5 @@
 """Unit tests for vision metering parity and cost calculation (Tasks C, D)."""
 
-import pytest
 from cogno_meter.pricing import PriceBook
 from cogno_meter.types import Modality, UsageRecord
 

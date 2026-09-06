@@ -33,6 +33,16 @@ class UsageRecord:
     model: str                 # "provider:model" (the model that actually ran)
     tokens_in: int = 0
     tokens_out: int = 0
+    # The SUBSET of ``tokens_in`` the provider served from its own prompt cache — NOT an extra
+    # amount on top. A repeated prefix (the EGO's correction retries re-send the same system
+    # prompt seconds apart) is billed by OpenAI at a much lower per-token rate, and the meter
+    # priced it as if it were fresh: measured live 2026-09-03, a second call with the same
+    # prefix reported 2432 cached of 2625 prompt tokens (92.6%).
+    #
+    # It changes the COST only. ``billable_tokens`` is deliberately untouched — the plan's
+    # allowance is denominated in tokens the customer spent, and the provider's cache is not
+    # the customer's business. See ``PriceBook.llm_cost_usd``.
+    cached_tokens: int = 0
     chars: int = 0             # audio: STT transcribed / TTS input characters
     minutes: float = 0.0       # audio duration (optional; STT provider-cost only)
 

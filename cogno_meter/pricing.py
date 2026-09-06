@@ -8,7 +8,11 @@ conversion, and per-modality cost. Two distinct numbers come out of here:
   * **billable_tokens** — what counts toward the plan allowance/overage (LLM &
     embedding tokens directly; audio = ``chars × audio_multiplier``).
   * **cost_usd** — the real upstream provider cost (transparency only). Local /
-    self-hosted models resolve to ``_default = 0``.
+    self-hosted models resolve to ``_default = 0``. A prompt the provider served
+    from its own cache (``UsageRecord.cached_tokens``) is priced at the model's
+    ``cached_input`` rate where the book has one — and at the FULL input rate,
+    with a warning, where it does not. The two numbers move independently: the
+    cache discount is ours, the allowance is the customer's.
 
 The lib ships a default seed (illustrative rates); a host injects its own via
 ``PriceBook.from_mapping(...)``. No YAML dependency — the host loads its config
@@ -43,25 +47,51 @@ _CLOUD_PROVIDERS = frozenset({
     "deepseek", "moonshot", "xai", "openrouter", "together", "fireworks",
 })
 
+# ``cached_input`` (OPTIONAL, USD per 1M tokens) — what the provider charges for the part of the
+# prompt it served from its own cache. **Absent means FULL PRICE**, which is exactly what this
+# book did before the key existed, and the direction that is safe: a missing rate over-states our
+# cost, so the daily BRL ceiling fires EARLY. A GUESSED discount would under-state it and the
+# ceiling would fire LATE — the failure this file's own doctrine ("refuse to call paid traffic
+# free") exists to prevent, one level down.
+#
+# So the key is seeded ONLY where the provider publishes a flat per-token cached-input rate, and
+# only for OpenAI. That is not a preference, it is the shape of the products:
+#   * OpenAI bills cached prompt tokens at a fixed lower per-token rate, automatically, with no
+#     write surcharge and no storage line — one number per model, which is what this column is.
+#   * Anthropic splits it in two (cache WRITE at 1.25x base input, cache READ at 0.10x) and the
+#     usage payload reports them separately; one column cannot carry both, and pricing a read at
+#     0.10x while silently ignoring the write would under-state the bill.
+#   * Gemini's context caching is billed per token-HOUR of storage plus a discounted read — a
+#     dimension (time) this book does not have.
+# Those two get NO ``cached_input`` and are charged full price, with the warning below naming
+# them. Adding them properly means adding their dimensions, not a number.
+#
+# Not seeded either: every model whose cached rate is not published in a form we have verified —
+# including ``gpt-5.6-luna``, which is ~78% of one deployment's whole reported provider spend.
+# Measured over its ``token_ledger`` twice on 2026-09-06, hours apart: $18.13 of $23.19 (78.2%)
+# and $20.15 of $25.98 (77.5%). The SHARE is the durable figure; the totals are a growing table
+# and were already stale between the two readings, which is why they are quoted as a pair.
+# It is charged FULL price and says so, loudly and once per model, because a warning naming the
+# biggest line is what gets the rate added.
 # stt: USD per minute of audio. tts: USD per 1M characters. _default: self-hosted = 0.
 DEFAULT_RATES: dict = {
     "llm": {
         # exact keys for every catalogued model — the fuzzy resolver would otherwise let a
         # bare "gpt-5-mini" greedily prefix-match "gpt-5"'s far pricier rate.
-        "openai:gpt-5-nano": {"input": 0.05, "output": 0.40},
-        "openai:gpt-4.1-nano": {"input": 0.10, "output": 0.40},
-        "openai:gpt-4o-mini": {"input": 0.15, "output": 0.60},
+        "openai:gpt-5-nano": {"input": 0.05, "output": 0.40, "cached_input": 0.005},
+        "openai:gpt-4.1-nano": {"input": 0.10, "output": 0.40, "cached_input": 0.025},
+        "openai:gpt-4o-mini": {"input": 0.15, "output": 0.60, "cached_input": 0.075},
         "openai:gpt-5.4-nano": {"input": 0.20, "output": 1.25},
-        "openai:gpt-5-mini": {"input": 0.25, "output": 2.00},
-        "openai:gpt-4.1-mini": {"input": 0.40, "output": 1.60},
+        "openai:gpt-5-mini": {"input": 0.25, "output": 2.00, "cached_input": 0.025},
+        "openai:gpt-4.1-mini": {"input": 0.40, "output": 1.60, "cached_input": 0.10},
         "openai:gpt-5.4-mini": {"input": 0.75, "output": 4.50},
         "openai:gpt-5.6-luna": {"input": 1.00, "output": 6.00},
-        "openai:gpt-5": {"input": 1.25, "output": 10.00},
-        "openai:gpt-4.1": {"input": 2.00, "output": 8.00},
+        "openai:gpt-5": {"input": 1.25, "output": 10.00, "cached_input": 0.125},
+        "openai:gpt-4.1": {"input": 2.00, "output": 8.00, "cached_input": 0.50},
         "openai:gpt-5.6-terra": {"input": 2.50, "output": 15.00},
         "openai:gpt-5.6-sol": {"input": 5.00, "output": 30.00},
         "openai:gpt-5.5-pro": {"input": 30.00, "output": 180.00},
-        "openai:gpt-4o": {"input": 2.50, "output": 10.00},
+        "openai:gpt-4o": {"input": 2.50, "output": 10.00, "cached_input": 1.25},
         # anthropic — real per-MTok rates (Opus 4.6=$5/$25, Sonnet 4.5=$3/$15, Haiku 4.5=$1/$5);
         # the original Opus 4 keeps its launch $15/$75.
         # Anthropic API IDs are hyphenated (claude-opus-4-6, not …4.6) — must match the id the
@@ -144,6 +174,11 @@ class PriceBook:
     rates: dict = field(default_factory=lambda: copy.deepcopy(DEFAULT_RATES))
     usd_brl_rate: float = DEFAULT_USD_BRL_RATE
     audio_multiplier: float = DEFAULT_AUDIO_MULTIPLIER  # chars × this → billable tokens
+    # Models already reported as having no `cached_input` rate (see `_declare_no_cache_rate`).
+    # Not part of the book's identity: excluded from init/repr/eq so two books built from the
+    # same mapping stay equal and a log-dedup set never leaks into a comparison.
+    _no_cache_rate_declared: set = field(
+        default_factory=set, init=False, repr=False, compare=False)
 
     @classmethod
     def default(cls) -> "PriceBook":
@@ -265,12 +300,50 @@ class PriceBook:
         return min(priced, key=lambda r: (r.get("output", 0.0), r.get("input", 0.0))) or None
 
     # ── provider cost (transparency), in USD ──────────────────────────
-    def llm_cost_usd(self, model: str, tokens_in: int, tokens_out: int) -> float:
+    def llm_cost_usd(self, model: str, tokens_in: int, tokens_out: int,
+                     cached_tokens: int = 0) -> float:
+        """Real upstream cost of one LLM call.
+
+        ``cached_tokens`` is the SUBSET of ``tokens_in`` the provider served from its prompt
+        cache (0 = unknown/none, and then this is byte-for-byte the old calculation). It is
+        priced at the model's ``cached_input`` rate when the book has one; when it does not,
+        the whole prompt is charged at the full ``input`` rate — today's behaviour — and the
+        omission is DECLARED (see ``_declare_no_cache_rate``). Never a default discount: an
+        invented one under-states our own cost, and the daily budget ceiling then fires late.
+        """
         rates = self._resolve(self.rates.get("llm", {}), model)
         if not isinstance(rates, dict):
             return 0.0
-        return (tokens_in / 1_000_000) * float(rates.get("input", 0)) + \
-               (tokens_out / 1_000_000) * float(rates.get("output", 0))
+        input_rate = float(rates.get("input", 0))
+        output_cost = (tokens_out / 1_000_000) * float(rates.get("output", 0))
+        # Clamped to [0, tokens_in]: the cached part is a SUBSET, and a provider payload that
+        # over-reports it must not produce a NEGATIVE fresh count (a credit on our own bill).
+        cached = max(0, min(int(cached_tokens or 0), int(tokens_in or 0)))
+        cached_rate = rates.get("cached_input")
+        if cached <= 0 or cached_rate is None:
+            if cached > 0:
+                self._declare_no_cache_rate(model, cached)
+            return (tokens_in / 1_000_000) * input_rate + output_cost
+        fresh = int(tokens_in or 0) - cached
+        return (fresh / 1_000_000) * input_rate + \
+               (cached / 1_000_000) * float(cached_rate) + output_cost
+
+    def _declare_no_cache_rate(self, model: str, cached: int) -> None:
+        """Say, once per model per book, that a real cache discount is being left on the table.
+
+        Once and not per call: the caller is a per-turn hot path and the models this fires for
+        are the ones running every turn, so a line per call is a line nobody reads. The dedup
+        lives on the INSTANCE (not the module) so a test gets a fresh book and a fresh count.
+        """
+        if model in self._no_cache_rate_declared:
+            return
+        self._no_cache_rate_declared.add(model)
+        logger.warning(
+            "event=cache_rate_uncatalogued model=%s cached_tokens=%d — the provider served part "
+            "of this prompt from its cache and the price book has no `cached_input` rate for "
+            "this model, so it is being charged at the FULL input rate. Our reported cost is "
+            "therefore HIGH (the safe direction). Add the model's published cached-input rate.",
+            model, cached)
 
     def embedding_cost_usd(self, model: str, tokens: int) -> float:
         rate = self._resolve(self.rates.get("embedding", {}), model)
@@ -286,7 +359,8 @@ class PriceBook:
 
     def usage_cost_usd(self, rec: UsageRecord) -> float:
         if rec.modality == Modality.LLM:
-            return self.llm_cost_usd(rec.model, int(rec.tokens_in or 0), int(rec.tokens_out or 0))
+            return self.llm_cost_usd(rec.model, int(rec.tokens_in or 0), int(rec.tokens_out or 0),
+                                     int(getattr(rec, "cached_tokens", 0) or 0))
         if rec.modality == Modality.EMBEDDING:
             return self.embedding_cost_usd(rec.model, int(rec.tokens_in or 0) or int(rec.tokens_out or 0))
         if rec.modality == Modality.STT:
@@ -304,6 +378,11 @@ class PriceBook:
         raise ``TypeError`` and abort billing for the whole period."""
         tin, tout = int(rec.tokens_in or 0), int(rec.tokens_out or 0)
         if rec.modality == Modality.LLM:
+            # ``cached_tokens`` is deliberately NOT subtracted. The plan's allowance is a
+            # contract denominated in tokens the customer's turns consumed; whether the
+            # provider happened to serve part of the prompt from its own cache changes what
+            # WE pay (``llm_cost_usd``), not what the customer used. Cutting the allowance
+            # here would silently rewrite every published plan.
             return tin + tout
         # Embedding: mirror the cost path (``tokens_in or tokens_out``) so billable tokens and
         # the priced amount interpret the same record identically — embeddings carry input only.
