@@ -286,16 +286,24 @@ def test_a_record_with_no_cached_tokens_prices_exactly_as_before(model):
 
 
 def test_a_model_with_no_cache_rate_is_charged_the_full_input_rate(caplog):
-    """gpt-5.6-luna is 78% of this deployment's real spend and its cached rate is not
-    published in a form the book carries. NEVER guess a discount: full price, and say so."""
+    """NEVER guess a discount: full price, and say so.
+
+    The model here used to be ``gpt-5.6-luna``, on the belief that its cached rate was not
+    published. It is — the page prints it — and the belief cost 8.8x on ~92% of one
+    deployment's spend. The specimen is now ``gpt-5.5-pro``, whose Cached input cell really
+    is a ``-``, and it is named in ``CACHE_RATE_NOT_PUBLISHED`` so the two cases cannot be
+    confused again by anyone reading only this test."""
+    from cogno_meter.pricing import CACHE_RATE_NOT_PUBLISHED
+
     book = PriceBook.default()
-    assert "cached_input" not in book.rates["llm"]["openai:gpt-5.6-luna"]
-    full = book.llm_cost_usd("openai:gpt-5.6-luna", 1_000_000, 0)
+    assert "openai:gpt-5.5-pro" in CACHE_RATE_NOT_PUBLISHED
+    assert "cached_input" not in book.rates["llm"]["openai:gpt-5.5-pro"]
+    full = book.llm_cost_usd("openai:gpt-5.5-pro", 1_000_000, 0)
     with caplog.at_level("WARNING", logger="cogno_meter.pricing"):
-        cached = book.llm_cost_usd("openai:gpt-5.6-luna", 1_000_000, 0, cached_tokens=900_000)
+        cached = book.llm_cost_usd("openai:gpt-5.5-pro", 1_000_000, 0, cached_tokens=900_000)
     assert cached == pytest.approx(full)
     assert "cache_rate_uncatalogued" in caplog.text
-    assert "openai:gpt-5.6-luna" in caplog.text
+    assert "openai:gpt-5.5-pro" in caplog.text
 
 
 def test_the_missing_rate_is_declared_once_per_model_not_once_per_call(caplog):
@@ -303,15 +311,15 @@ def test_the_missing_rate_is_declared_once_per_model_not_once_per_call(caplog):
     book = PriceBook.default()
     with caplog.at_level("WARNING", logger="cogno_meter.pricing"):
         for _ in range(5):
-            book.llm_cost_usd("openai:gpt-5.6-luna", 1_000, 0, cached_tokens=900)
-        book.llm_cost_usd("openai:gpt-5.5-pro", 1_000, 0, cached_tokens=900)
+            book.llm_cost_usd("openai:gpt-5.5-pro", 1_000, 0, cached_tokens=900)
+        book.llm_cost_usd("anthropic:claude-opus-4-6", 1_000, 0, cached_tokens=900)
     lines = [r for r in caplog.records if "cache_rate_uncatalogued" in r.getMessage()]
     assert len(lines) == 2
     # …and a FRESH book counts again (the dedup is per instance, so tests do not infect
     # each other and a long-lived process is not silenced by a short-lived one).
     with caplog.at_level("WARNING", logger="cogno_meter.pricing"):
         caplog.clear()
-        PriceBook.default().llm_cost_usd("openai:gpt-5.6-luna", 1_000, 0, cached_tokens=900)
+        PriceBook.default().llm_cost_usd("openai:gpt-5.5-pro", 1_000, 0, cached_tokens=900)
     assert "cache_rate_uncatalogued" in caplog.text
 
 
@@ -355,3 +363,121 @@ def test_every_seeded_cache_rate_is_cheaper_than_the_models_own_input_rate():
         if not isinstance(rates, dict) or "cached_input" not in rates:
             continue
         assert 0.0 < rates["cached_input"] < rates["input"], model
+
+
+# ── the entry that was wrong, and the gate that keeps the next one from being silent ───────
+#
+# One table row, on the model that is ~92% of one deployment's provider spend: gpt-5.6-luna
+# shipped at input 1.00 / output 6.00 and no cache rate, against a published Standard,
+# short-context 0.20 / 1.20 / 0.02. Nobody was over-BILLED — the invoice and the monthly
+# allowance are both in TOKENS — but the daily BRL ceiling is in money, so it degraded and
+# refused service at 22% of the real budget. The defect did not take money; it took service.
+
+_EGO_CALL = dict(tokens_in=17151, tokens_out=97, cached_tokens=8519)  # trace 1960, turn 97
+
+
+def test_the_ruler_reproduces_the_number_the_ledger_actually_stored():
+    """The twin, run in BOTH worlds: the same real call under the entry that shipped.
+
+    ``$0.017733`` is what ``token_ledger`` holds for it, to the sixth decimal — this is the
+    line that proves the test measures the same thing the system measured, and it cannot rot,
+    because the broken table is built here rather than read from the book."""
+    was_shipped = PriceBook.from_mapping({"llm": {
+        "openai:gpt-5.6-luna": {"input": 1.00, "output": 6.00},   # no cached_input → full price
+        "_default": {"input": 0.0, "output": 0.0},
+    }})
+    before = was_shipped.llm_cost_usd("gpt-5.6-luna", **_EGO_CALL)
+    assert before == pytest.approx(0.017733, abs=5e-7)
+    after = PriceBook.default().llm_cost_usd("gpt-5.6-luna", **_EGO_CALL)
+    assert before / after == pytest.approx(8.81, abs=0.01)
+
+
+def test_the_measured_call_is_priced_from_the_published_standard_rates():
+    """The bare name is the one the ledger stores — the factory strips the prefix before it
+    writes. Both the rates and the resulting cost are pinned: reverting the row fails the
+    second assertion, and fixing input/output while forgetting ``cached_input`` (the fix a
+    hurry produces, worth $0.003547 on this call) fails both."""
+    book = PriceBook.default()
+    assert book.rates["llm"]["openai:gpt-5.6-luna"] == {
+        "input": 0.20, "output": 1.20, "cached_input": 0.02}
+    assert book.llm_cost_usd("gpt-5.6-luna", **_EGO_CALL) == pytest.approx(0.00201318, abs=1e-8)
+    # half a fix is not a fix, and it is neither the red nor the green number
+    half = (17151 / 1e6) * 0.20 + (97 / 1e6) * 1.20
+    assert half == pytest.approx(0.0035466, abs=1e-8)
+    assert book.llm_cost_usd("gpt-5.6-luna", **_EGO_CALL) < half
+
+
+def test_the_two_calls_in_the_same_turn_that_were_already_right_do_not_move():
+    """The control. The same turn priced two other models correctly; this PR must not touch a
+    digit of either, and both rates are confirmed against the same page as the three it does
+    change."""
+    book = PriceBook.default()
+    assert book.llm_cost_usd("gpt-4o-mini", 3182, 326, cached_tokens=3072) == \
+        pytest.approx(0.00044250, abs=1e-8)
+    assert book.llm_cost_usd("gpt-4.1-nano", 1485, 41, cached_tokens=1280) == \
+        pytest.approx(0.00006890, abs=1e-8)
+
+
+@pytest.mark.parametrize("model,rates", [
+    ("openai:gpt-5.6-luna", {"input": 0.20, "output": 1.20, "cached_input": 0.02}),
+    ("openai:gpt-5.6-terra", {"input": 2.00, "output": 12.00, "cached_input": 0.20}),
+    ("openai:gpt-5.6-sol", {"input": 4.00, "output": 20.00, "cached_input": 0.40}),
+])
+def test_the_5_6_family_carries_the_standard_short_context_rates(model, rates):
+    """All three were wrong on every column, and all three disagreements between readers were
+    the same mistake: a different CELL of a 4-tier x 2-context grid, not a different price.
+    ``gpt-5.6-sol``'s 4.00/20.00 is promotional (the page says at least through 2026-11-21),
+    which is the one row here with an expiry rather than a correction."""
+    assert PriceBook.default().rates["llm"][model] == rates
+
+
+# ── the mechanism: silence becomes a written decision ──────────────────────────────────────
+
+def test_every_openai_model_declares_its_cache_rate_or_declares_why_not():
+    """The generalisation of the defect, and the only part of this that outlives the row.
+
+    Six OpenAI models carried no ``cached_input`` and nothing said whether that meant "the
+    provider publishes none" or "nobody looked". One of them was 92% of the bill. There is no
+    third state now: carry the rate, or be named with the reason."""
+    from cogno_meter.pricing import CACHE_RATE_NOT_PUBLISHED, DEFAULT_RATES
+
+    undeclared = sorted(
+        k for k, r in DEFAULT_RATES["llm"].items()
+        if k.startswith("openai:") and not k.endswith("_default")
+        and isinstance(r, dict) and "cached_input" not in r
+        and k not in CACHE_RATE_NOT_PUBLISHED)
+    assert not undeclared, (
+        "OpenAI models with neither a cached_input rate nor a written reason: "
+        f"{undeclared} — add the published rate, or name it in CACHE_RATE_NOT_PUBLISHED")
+
+
+def test_the_exemption_list_cannot_become_a_parking_lot():
+    """Every list like this one rots the same way: a name stays on it after the reason is gone,
+    and the exemption becomes permanent. Each entry must name a model the table actually has,
+    must still lack the rate, and must say why."""
+    from cogno_meter.pricing import CACHE_RATE_NOT_PUBLISHED, DEFAULT_RATES
+
+    llm = DEFAULT_RATES["llm"]
+    for model, reason in CACHE_RATE_NOT_PUBLISHED.items():
+        assert model in llm, f"{model} is exempted but is not in the price book"
+        assert "cached_input" not in llm[model], \
+            f"{model} now HAS a cached rate — drop it from CACHE_RATE_NOT_PUBLISHED"
+        assert reason and reason.strip(), f"{model} is exempted with no reason"
+
+
+def test_the_providers_this_table_cannot_model_are_named_with_their_reason():
+    """Anthropic and Gemini are out of the gate because their caching has a dimension this book
+    does not have — a write/read split and a per-token-HOUR storage line. That is a reason, not
+    an oversight, so it is data a test can read. If one of their models ever acquires a
+    ``cached_input`` the exemption is the thing that has to move, not the assertion."""
+    from cogno_meter.pricing import CACHE_RATE_NOT_MODELLED, DEFAULT_RATES
+
+    llm = DEFAULT_RATES["llm"]
+    for provider, reason in CACHE_RATE_NOT_MODELLED.items():
+        models = [k for k in llm if k.startswith(f"{provider}:") and not k.endswith("_default")]
+        assert models, f"{provider} is exempted but has no models in the book"
+        assert reason and reason.strip(), f"{provider} is exempted with no reason"
+        priced = [m for m in models if "cached_input" in llm[m]]
+        assert not priced, (
+            f"{priced} carry a cached_input while {provider} is declared un-modellable — "
+            "either the dimension is now modelled (drop the exemption) or the rate is a guess")

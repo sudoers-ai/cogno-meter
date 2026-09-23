@@ -54,8 +54,24 @@ _CLOUD_PROVIDERS = frozenset({
 # ceiling would fire LATE — the failure this file's own doctrine ("refuse to call paid traffic
 # free") exists to prevent, one level down.
 #
-# So the key is seeded ONLY where the provider publishes a flat per-token cached-input rate, and
-# only for OpenAI. That is not a preference, it is the shape of the products:
+# **Which cell of the page a number comes from is part of the number.** OpenAI's pricing page is a
+# 4-tier × 2-context grid — Standard / Batch / Flex / Fast, each split into *Short context*
+# (≤272K input tokens) and *Long context* (>272K) with the four headers Input | Cached input |
+# Cache writes | Output repeated on both sides. Every rate below is **Standard, short context**,
+# because that is what an ordinary API call is billed at and no traffic this meter has seen comes
+# near 272K. That sentence is not decoration: three readings of this same page disagreed and every
+# disagreement was a different cell, not a different price (see the PR that added this line). Two dimensions of that grid are NOT modelled here and both are named, with their
+# direction, rather than left to be rediscovered:
+#   * **Long context** (>272K input) is 2x input / 2x cached / 1.5x output for the 5.6 family. A
+#     call that big is priced here at the short-context rate — an UNDER-report. No record carries
+#     a context class, so fixing it means a second column keyed on ``tokens_in``, not a number.
+#   * **Cache writes** (1.25x input) is a THIRD partition of the prompt, not an additive fee
+#     ("Input tokens are either Input, Cached Input, or Cache Write"). ``UsageRecord`` has no
+#     count for it, so those tokens are charged at ``input`` — an UNDER-report bounded at 25% of
+#     whatever share was written. It needs a field before it can need a rate.
+#
+# The key is seeded wherever the provider publishes a flat per-token cached-input rate, and only
+# for OpenAI. That is not a preference, it is the shape of the products:
 #   * OpenAI bills cached prompt tokens at a fixed lower per-token rate, automatically, with no
 #     write surcharge and no storage line — one number per model, which is what this column is.
 #   * Anthropic splits it in two (cache WRITE at 1.25x base input, cache READ at 0.10x) and the
@@ -64,15 +80,22 @@ _CLOUD_PROVIDERS = frozenset({
 #   * Gemini's context caching is billed per token-HOUR of storage plus a discounted read — a
 #     dimension (time) this book does not have.
 # Those two get NO ``cached_input`` and are charged full price, with the warning below naming
-# them. Adding them properly means adding their dimensions, not a number.
+# them. Adding them properly means adding their dimensions, not a number — and that sentence now
+# lives in ``CACHE_RATE_NOT_MODELLED`` where a test can read it, instead of only in this comment.
 #
-# Not seeded either: every model whose cached rate is not published in a form we have verified —
-# including ``gpt-5.6-luna``, which is ~78% of one deployment's whole reported provider spend.
-# Measured over its ``token_ledger`` twice on 2026-09-06, hours apart: $18.13 of $23.19 (78.2%)
-# and $20.15 of $25.98 (77.5%). The SHARE is the durable figure; the totals are a growing table
-# and were already stale between the two readings, which is why they are quoted as a pair.
-# It is charged FULL price and says so, loudly and once per model, because a warning naming the
-# biggest line is what gets the rate added.
+# **Silence is not a third state.** An ``openai:`` model either carries ``cached_input`` or is
+# named in ``CACHE_RATE_NOT_PUBLISHED`` with the reason; ``test_every_openai_model_declares_its_
+# cache_rate_or_declares_why_not`` fails on the one that does neither. Before that gate existed
+# six OpenAI models had no rate and no declaration, and nothing distinguished "the provider does
+# not publish one" from "nobody has looked yet" — which is how ``gpt-5.6-luna``, ~92% of one
+# deployment's provider spend, ran for weeks at 5x its input rate and 5x its output rate with the
+# cache discount thrown away on top. Measured on one real call (trace 1960, turn 97, the EGO
+# stage: 17151 in / 8519 of them cached / 97 out) the book reported **$0.017733** — the figure in
+# ``token_ledger`` to the sixth decimal — against **$0.002013** at the published rates: an 8.8x
+# over-report. Nobody was over-BILLED (the invoice and the monthly allowance are both denominated
+# in tokens, and ``billable_tokens`` never saw this), but the daily BRL ceiling is denominated in
+# money: the guard saw R$ 6.18 of spend in 24h where the truth was ≈R$ 1.38 and started degrading
+# and refusing service at 22% of the real budget. The defect took nobody's money; it took service.
 # stt: USD per minute of audio. tts: USD per 1M characters. _default: self-hosted = 0.
 DEFAULT_RATES: dict = {
     "llm": {
@@ -81,15 +104,15 @@ DEFAULT_RATES: dict = {
         "openai:gpt-5-nano": {"input": 0.05, "output": 0.40, "cached_input": 0.005},
         "openai:gpt-4.1-nano": {"input": 0.10, "output": 0.40, "cached_input": 0.025},
         "openai:gpt-4o-mini": {"input": 0.15, "output": 0.60, "cached_input": 0.075},
-        "openai:gpt-5.4-nano": {"input": 0.20, "output": 1.25},
+        "openai:gpt-5.4-nano": {"input": 0.20, "output": 1.25, "cached_input": 0.02},
         "openai:gpt-5-mini": {"input": 0.25, "output": 2.00, "cached_input": 0.025},
         "openai:gpt-4.1-mini": {"input": 0.40, "output": 1.60, "cached_input": 0.10},
-        "openai:gpt-5.4-mini": {"input": 0.75, "output": 4.50},
-        "openai:gpt-5.6-luna": {"input": 1.00, "output": 6.00},
+        "openai:gpt-5.4-mini": {"input": 0.75, "output": 4.50, "cached_input": 0.075},
+        "openai:gpt-5.6-luna": {"input": 0.20, "output": 1.20, "cached_input": 0.02},
         "openai:gpt-5": {"input": 1.25, "output": 10.00, "cached_input": 0.125},
         "openai:gpt-4.1": {"input": 2.00, "output": 8.00, "cached_input": 0.50},
-        "openai:gpt-5.6-terra": {"input": 2.50, "output": 15.00},
-        "openai:gpt-5.6-sol": {"input": 5.00, "output": 30.00},
+        "openai:gpt-5.6-terra": {"input": 2.00, "output": 12.00, "cached_input": 0.20},
+        "openai:gpt-5.6-sol": {"input": 4.00, "output": 20.00, "cached_input": 0.40},  # promo
         "openai:gpt-5.5-pro": {"input": 30.00, "output": 180.00},
         "openai:gpt-4o": {"input": 2.50, "output": 10.00, "cached_input": 1.25},
         # anthropic — real per-MTok rates (Opus 4.6=$5/$25, Sonnet 4.5=$3/$15, Haiku 4.5=$1/$5);
@@ -163,6 +186,27 @@ DEFAULT_RATES: dict = {
         "xai:grok-2-tts": 4.20,
         "_default": 0.0,  # self-hosted Kokoro
     },
+}
+
+# Models a reader of the table above would expect to carry ``cached_input`` and which
+# deliberately do not, each with the reason. The gate in the tests reads THIS, so adding a model
+# without a cache rate is a decision somebody has to write down rather than an omission nobody
+# notices. Every name here must exist in the table and must NOT carry the rate — a stale
+# exemption is the failure mode of every list like this one, and the test fails on it.
+CACHE_RATE_NOT_PUBLISHED: dict = {
+    "openai:gpt-5.5-pro": "the Standard table prints '-' in the Cached input column",
+}
+
+# Whole providers the gate deliberately does not cover, with the reason it cannot. These are not
+# missing numbers, they are missing DIMENSIONS (see the long comment above the table): a column
+# here would have to lie about one of them. Kept as data, not prose, so the test can check that
+# none of their models has quietly acquired a ``cached_input`` behind the exemption.
+CACHE_RATE_NOT_MODELLED: dict = {
+    "anthropic": "cache WRITE (1.25x input) and cache READ (0.10x) are billed and reported "
+                 "separately; one column cannot carry both, and pricing the read while ignoring "
+                 "the write would under-state the bill",
+    "gemini": "context caching is billed per token-HOUR of storage plus a discounted read — a "
+              "dimension (time) this book does not have",
 }
 
 DEFAULT_USD_BRL_RATE = 5.70
