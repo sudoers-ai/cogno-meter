@@ -481,3 +481,133 @@ def test_the_providers_this_table_cannot_model_are_named_with_their_reason():
         assert not priced, (
             f"{priced} carry a cached_input while {provider} is declared un-modellable — "
             "either the dimension is now modelled (drop the exemption) or the rate is a guess")
+
+
+# ── the floor could not fire on a single LLM row: the ledger stores the BARE name ──────────
+#
+# ``create_backend("openai:gpt-4o-mini")`` splits the spec and hands the backend the bare model,
+# so the ledger holds ``gpt-4o-mini``. The floor added in #13 tested for a ``provider:`` prefix
+# and therefore never fired: every model outside the table metered at ZERO, in silence. Measured
+# on the base tree over the four names below (all 0.0, no log line) and over all six Bedrock ids
+# in one deployment's catalogue.
+#
+# The rule these pin is a DISJUNCTION, because the two halves have different costs when wrong:
+# the floor may only fire where a provider can honestly be attributed (a false hit invents cost
+# on somebody's own hardware and inflates their ceiling — trading this defect for a worse one),
+# and everything else must at least be NAMED. What may never happen is neither.
+
+_BARE_CLOUD_NAMES = [
+    "gpt-6-mini",                    # an OpenAI model this book has not catalogued yet
+    "claude-opus-5",                 # ditto, Anthropic
+    "deepseek-chat",                 # a provider with no rates at all in the book
+    "anthropic.claude-opus-4-6-v1",  # Bedrock's vendor-qualified form
+]
+
+# every Bedrock id in one deployment's model catalogue — the population, not the example
+_BEDROCK_CATALOGUE = [
+    "meta.llama4-scout-17b-instruct-v1:0",
+    "anthropic.claude-haiku-4-5-20251001-v1:0",
+    "anthropic.claude-sonnet-4-20250514-v1:0",
+    "anthropic.claude-sonnet-4-5-20250929-v1:0",
+    "meta.llama4-maverick-17b-instruct-v1:0",
+    "anthropic.claude-opus-4-6-v1",
+]
+
+
+@pytest.mark.parametrize("model", _BARE_CLOUD_NAMES)
+def test_a_bare_cloud_model_name_is_floored_and_named(model, caplog):
+    """All four are attributable, so BOTH halves fire: a non-zero floor and a line naming it."""
+    book = PriceBook.default()
+    with caplog.at_level("WARNING", logger="cogno_meter.pricing"):
+        cost = book.llm_cost_usd(model, 1_000_000, 1_000_000)
+    assert cost > 0.0, f"{model} metered FREE"
+    assert model in caplog.text, f"{model} was floored without being named"
+
+
+@pytest.mark.parametrize("model", _BEDROCK_CATALOGUE)
+def test_no_model_in_the_bedrock_catalogue_meters_free_in_silence(model, caplog):
+    """Four of the six carry a vendor this book knows and take the floor; the two ``meta.`` ones
+    do not, and cost 0 — but they are NAMED, which is the half of the rule that has to hold for
+    every id, including the ones nothing can be floored against."""
+    book = PriceBook.default()
+    with caplog.at_level("WARNING", logger="cogno_meter.pricing"):
+        cost = book.llm_cost_usd(model, 1_000_000, 1_000_000)
+    assert cost > 0.0 or model in caplog.text, f"{model} metered free, in silence"
+
+
+@pytest.mark.parametrize("model", ["qwen3:8b", "ollama:nomic-embed-text:latest",
+                                   "mistral:latest", "nomic-embed-text:latest",
+                                   "ollama:anything-at-all"])
+def test_a_self_hosted_model_stays_exactly_free_and_stays_quiet(model, caplog):
+    """THE control, and the most important assertion in this file.
+
+    3.7M tokens in one ledger are these models. Their zero is deliberate and defended: a fix
+    that makes the floor bite here invents cost where there is none and inflates the tenant's
+    daily ceiling — the same harm as the defect, pointing the other way. Quiet as well as free,
+    because a warning on the model that runs every turn is how a warning stops being read."""
+    book = PriceBook.default()
+    with caplog.at_level("WARNING", logger="cogno_meter.pricing"):
+        assert book.llm_cost_usd(model, 1_000_000, 1_000_000) == 0.0, model
+    assert not caplog.text, f"{model} is declared free, not unknown: {caplog.text}"
+
+
+def test_the_colon_cannot_be_the_discriminator_and_gpt_oss_is_why():
+    """``gpt-oss:20b`` runs on Ollama and its leading token is the very family that identifies
+    OpenAI. Five of the six Bedrock ids also carry a colon, so neither "has a colon" nor "has
+    the family" can decide alone. The dot does: a vendor-qualified id has one before the tag."""
+    book = PriceBook.default()
+    assert book.llm_cost_usd("gpt-oss:20b", 1_000_000, 1_000_000) == 0.0
+    assert book.llm_cost_usd("gpt-6-mini", 1_000_000, 1_000_000) > 0.0        # same family
+    assert book.llm_cost_usd("anthropic.claude-opus-4-6-v1", 1_000, 1_000) > 0.0  # same colon-less
+
+
+def test_an_ambiguous_family_is_not_attributed(caplog):
+    """``whisper`` is shipped by openai AND groq in the stt table, so a bare ``whisper-*`` cannot
+    be charged to either. Ambiguous means NOT attributed — named, never guessed."""
+    book = PriceBook.default()
+    from cogno_meter.pricing import DEFAULT_RATES
+    assert PriceBook._families(DEFAULT_RATES["stt"])["whisper"] is None
+    with caplog.at_level("WARNING", logger="cogno_meter.pricing"):
+        assert book.stt_cost_usd("whisper-9-turbo", 10) == 0.0
+    assert "whisper-9-turbo" in caplog.text
+
+
+def test_a_declared_provider_default_is_honoured_and_a_bare_name_reaches_it(caplog):
+    """A host that declares ``<provider>:_default`` gets it — for the prefixed id, for a bare
+    name the table lets it attribute, and for a scheme this book does not know, which is how
+    ``ollama:_default = 0`` keeps meaning what it says."""
+    book = PriceBook.from_mapping({"llm": {
+        "openai:gpt-4o-mini": {"input": 0.15, "output": 0.60},   # gives the book a 'gpt' family
+        "openai:_default": {"input": 10.0, "output": 30.0},
+        "ollama:_default": {"input": 0.0, "output": 0.0},
+        "_default": {"input": 0.0, "output": 0.0},
+    }})
+    assert book.llm_cost_usd("openai:gpt-brand-new", 1_000_000, 1_000_000) == pytest.approx(40.0)
+    assert book.llm_cost_usd("gpt-brand-new", 1_000_000, 1_000_000) == pytest.approx(40.0)
+    with caplog.at_level("WARNING", logger="cogno_meter.pricing"):
+        assert book.llm_cost_usd("ollama:whatever", 1_000_000, 1_000_000) == 0.0
+    assert not caplog.text          # a DECLARED zero is a decision, not an unknown
+
+
+def test_attribution_is_one_sided_and_a_book_with_no_catalogue_cannot_attribute(caplog):
+    """The inference is derived from the table, so a book that catalogues no model has nothing
+    to derive from and attributes nothing. The miss costs today's behaviour (zero) plus a line
+    naming the model; the opposite error would invent a charge. That asymmetry is the design."""
+    book = PriceBook.from_mapping({"llm": {
+        "openai:_default": {"input": 10.0, "output": 30.0},
+        "_default": {"input": 0.0, "output": 0.0},
+    }})
+    with caplog.at_level("WARNING", logger="cogno_meter.pricing"):
+        assert book.llm_cost_usd("gpt-brand-new", 1_000_000, 1_000_000) == 0.0
+    assert "gpt-brand-new" in caplog.text
+
+
+def test_a_catalogued_model_resolves_exactly_as_before(caplog):
+    """The byte-identical twin: nothing on the matching paths moved, and a model the book
+    prices must never reach the floor or emit a line."""
+    book = PriceBook.default()
+    with caplog.at_level("WARNING", logger="cogno_meter.pricing"):
+        assert book.llm_cost_usd("gpt-4o-mini", 1_000_000, 0) == pytest.approx(0.15)
+        assert book.llm_cost_usd("openai:gpt-4o", 1_000_000, 0) == pytest.approx(2.50)
+        assert book.llm_cost_usd("gpt-4o-mini-2024-07-18", 1_000_000, 0) == pytest.approx(0.15)
+    assert not caplog.text
