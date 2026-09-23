@@ -87,9 +87,12 @@ _CLOUD_PROVIDERS = frozenset({
 # named in ``CACHE_RATE_NOT_PUBLISHED`` with the reason; ``test_every_openai_model_declares_its_
 # cache_rate_or_declares_why_not`` fails on the one that does neither. Before that gate existed
 # six OpenAI models had no rate and no declaration, and nothing distinguished "the provider does
-# not publish one" from "nobody has looked yet" — which is how ``gpt-5.6-luna``, ~92% of one
-# deployment's provider spend, ran for weeks at 5x its input rate and 5x its output rate with the
-# cache discount thrown away on top. Measured on one real call (trace 1960, turn 97, the EGO
+# not publish one" from "nobody has looked yet" — which is how ``gpt-5.6-luna`` ran for weeks at
+# 5x its input rate and 5x its output rate with the cache discount thrown away on top. It is the
+# dominant line of one deployment's reported provider spend: measured over its ``token_ledger``
+# twice on 2026-09-06, hours apart, at 78.2% and 77.5% (the SHARE is the durable figure; the
+# totals were already stale between the two readings), and reported at ~92% when this row was
+# corrected — a share that has NOT been re-measured here, and is quoted as the later report it is. Measured on one real call (trace 1960, turn 97, the EGO
 # stage: 17151 in / 8519 of them cached / 97 out) the book reported **$0.017733** — the figure in
 # ``token_ledger`` to the sixth decimal — against **$0.002013** at the published rates: an 8.8x
 # over-report. Nobody was over-BILLED (the invoice and the monthly allowance are both denominated
