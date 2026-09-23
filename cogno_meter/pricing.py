@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import copy
 import logging
+import re
 from dataclasses import dataclass, field
 
 from cogno_meter.types import Modality, UsageRecord
@@ -42,6 +43,14 @@ logger = logging.getLogger("cogno_meter.pricing")
 # Kept in step with the backends cogno-synapse ships (its factory's named providers plus the
 # _OPENAI_COMPATIBLE registry). A name not on this list resolves as before: unknown scheme,
 # global default, zero.
+#
+# **The ledger does not store the prefix.** ``create_backend("openai:gpt-4o-mini")`` splits the
+# spec and hands the backend the BARE model, so what reaches this book is ``gpt-4o-mini``, not
+# ``openai:gpt-4o-mini``. The floor below was written against the prefixed form and therefore
+# never fired on a single LLM row: every model outside the table metered at ZERO, in silence —
+# measured over the four names below and over all six Bedrock ids in one deployment's catalogue.
+# So the provider is now also inferred from a bare name (``_provider_of``), and anything left
+# unattributed is NAMED at WARNING instead of costing nothing quietly.
 _CLOUD_PROVIDERS = frozenset({
     "openai", "anthropic", "gemini", "grok", "groq", "bedrock",
     "deepseek", "moonshot", "xai", "openrouter", "together", "fireworks",
@@ -277,8 +286,12 @@ class PriceBook:
                 return rate
         # Per-provider catch-all (``openai:_default``) before the global one, so a host can set a
         # non-zero default per provider instead of every un-catalogued model silently costing 0.
-        if ":" in model and model.split(":", 1)[0] in _CLOUD_PROVIDERS:
-            provider = model.split(":", 1)[0]
+        #
+        # ``_provider_of`` answers for the PREFIXED form and for the bare name the ledger really
+        # stores; when it answers, the three steps below are exactly the ones this block has
+        # always run.
+        provider = PriceBook._provider_of(table, model)
+        if provider is not None:
             provider_default = table.get(f"{provider}:_default")
             if provider_default is not None:
                 logger.debug("event=rate_resolve model=%s match=provider_default", model)
@@ -320,8 +333,99 @@ class PriceBook:
                     "this provider has NO rates in the price book; its traffic would otherwise "
                     "meter as FREE. Add %s rates.", model, provider, cheapest_cloud, provider)
                 return cheapest_cloud
-        logger.debug("event=rate_resolve model=%s match=default", model)
+            # A known cloud provider and the book has no priced rate anywhere to floor against.
+            # Nothing left to charge, but it is still paid traffic: name it.
+            logger.warning(
+                "event=rate_unattributed model=%s provider=%s — the price book holds no rate "
+                "this call can be floored against, so it is metered at ZERO. Add rates for %s.",
+                model, provider, provider)
+            return table.get("_default")
+
+        # Nobody bills this model as far as this book can tell. Two ways that is FINE and one
+        # way it is the defect, and they are told apart so the warning stays worth reading:
+        #
+        #   1. the host DECLARED a default for this scheme (``ollama:_default = 0``) — a written
+        #      decision, so it is honoured for any ``ollama:<anything>`` and logged at DEBUG;
+        #   2. the name has Ollama's native ``model:tag`` shape and no attributable provider, so
+        #      it is a model on the user's own hardware (``qwen3:8b``, ``mistral:latest``) —
+        #      free, quietly, which is what it has always been and what it must stay;
+        #   3. anything else is a model somebody is being charged for and this book cannot name.
+        #      It still costs 0 here (inventing a number is the worse trade — see the control in
+        #      the tests) but it is no longer SILENT, and the WARNING carries the model, because
+        #      a floor that fires and a name nobody logged are equally invisible in a ledger.
+        if ":" in model:
+            declared = table.get(f"{model.split(':', 1)[0]}:_default")
+            if declared is not None:
+                logger.debug("event=rate_resolve model=%s match=declared_default", model)
+                return declared
+        if PriceBook._looks_self_hosted(model):
+            logger.debug("event=rate_resolve model=%s match=self_hosted_tag", model)
+            self_hosted = table.get("ollama:_default")
+            return self_hosted if self_hosted is not None else table.get("_default")
+        logger.warning(
+            "event=rate_unattributed model=%s — nothing in the price book prices this model and "
+            "its name carries no provider this book knows, so it is metered at ZERO. Add the "
+            "model, or give the ledger a `provider:` prefix; paid traffic reported as free is "
+            "the failure this floor exists to prevent.", model)
         return table.get("_default")
+
+    # ── who bills this model, for a prefixed id AND for the bare name the ledger stores ──
+    #
+    # Attribution is deliberately one-sided: a miss leaves today's behaviour (zero, now with a
+    # warning), a false hit INVENTS cost on a model running on the user's own hardware and
+    # inflates that tenant's daily ceiling — trading this defect for a worse one. So every step
+    # is derived from data already in this file, and the self-hosted shape wins over all of it.
+    @staticmethod
+    def _provider_of(table: dict, model: str) -> "str | None":
+        if ":" in model and model.split(":", 1)[0] in _CLOUD_PROVIDERS:
+            return model.split(":", 1)[0]
+        if PriceBook._looks_self_hosted(model):
+            return None
+        head = PriceBook._head(model.split(":", 1)[0])
+        if not head:
+            return None
+        if head in _CLOUD_PROVIDERS:        # 'anthropic.claude-…-v1:0', 'deepseek-chat'
+            return head
+        return PriceBook._families(table).get(head)   # 'gpt-6-mini' → openai, via the table
+
+    @staticmethod
+    def _looks_self_hosted(model: str) -> bool:
+        """Ollama's native name is ``model:tag`` — ``qwen3:8b``, ``mistral:latest``.
+
+        A Bedrock id is ``vendor.family-…-vN:0`` and also carries a colon, so "has a colon"
+        decides nothing and a first version of the floor that read it that way started charging
+        for local models. The DOT decides: a vendor-qualified id has one before the tag, a plain
+        ``name:tag`` does not. This is what stops ``gpt-oss:20b`` — whose leading token is the
+        very family that identifies OpenAI — from being attributed and billed."""
+        return ":" in model and "." not in model.rsplit(":", 1)[0]
+
+    @staticmethod
+    def _head(name: str) -> str:
+        return re.split(r"[-./]", name, maxsplit=1)[0].lower()
+
+    @staticmethod
+    def _families(table: dict) -> dict:
+        """``{family token: the one cloud provider that ships it}``, derived from the book.
+
+        ``gpt`` → openai, ``claude`` → anthropic, ``gemini`` → gemini, ``grok`` → grok. A family
+        two providers share (``whisper``, for openai and groq in the stt table) maps to ``None``:
+        ambiguous means NOT attributed, because the cost of guessing wrong is a charge invented
+        against the wrong tenant."""
+        families: dict = {}
+        for key in table:
+            if ":" not in key or key.endswith("_default"):
+                continue
+            provider, bare = key.split(":", 1)
+            if provider not in _CLOUD_PROVIDERS:
+                continue
+            head = PriceBook._head(bare)
+            if not head:
+                continue
+            if head in families and families[head] != provider:
+                families[head] = None
+            else:
+                families.setdefault(head, provider)
+        return families
 
     @staticmethod
     def _cheapest_cloud(table: dict):
